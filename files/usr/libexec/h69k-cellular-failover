@@ -5,8 +5,12 @@
 STATE_DIR=/tmp/h69k-cellular
 mkdir -p "$STATE_DIR"
 
-iface_up() {
-	ifstatus "$1" 2>/dev/null | jsonfilter -e '@.up' 2>/dev/null | grep -qx true
+iface_online() {
+	status="$(ifstatus "$1" 2>/dev/null)" || return 1
+	echo "$status" | jsonfilter -e '@.up' 2>/dev/null | grep -qx true || return 1
+	echo "$status" | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null | grep -q . && return 0
+	echo "$status" | jsonfilter -e '@["ipv6-address"][0].address' 2>/dev/null | grep -q . && return 0
+	echo "$status" | jsonfilter -e '@["ipv6-prefix"][0].address' 2>/dev/null | grep -q .
 }
 
 set_apn() {
@@ -37,6 +41,7 @@ try_fallback_apn() {
 	case "$index" in
 		0) apn=cmnet; next=1 ;;
 		1) apn=3gnet; next=2 ;;
+		2) apn=wonet; next=3 ;;
 		*) apn=ctnet; next=0 ;;
 	esac
 	set_apn "$apn"
@@ -50,28 +55,68 @@ while true; do
 
 	[ -n "$APN" ] && set_apn "$APN"
 
-	if [ -c "$PCIE_DEVICE" ]; then
-		mode=pcie
-		interface=cell_pcie
-	elif [ -c "$USB_QMI_DEVICE" ]; then
-		mode=usb
-		interface=cell_usb_qmi
-	else
+	pcie_present=0
+	usb_present=0
+	[ -c "$PCIE_DEVICE" ] && pcie_present=1
+	[ -c "$USB_QMI_DEVICE" ] && usb_present=1
+	if [ "$pcie_present" -eq 0 ] && [ "$usb_present" -eq 0 ]; then
 		sleep 15
 		continue
 	fi
 
 	previous="$(cat "$STATE_DIR/mode" 2>/dev/null || true)"
-	if [ "$previous" != "$mode" ]; then
-		bring_up "$mode"
-	elif ! iface_up "$interface"; then
-		now="$(date +%s)"
-		since="$(cat "$STATE_DIR/since" 2>/dev/null || echo "$now")"
-		wait_seconds="$(uci -q get h69kcellular.main.pcie_probe_seconds || echo 45)"
-		if [ $((now - since)) -ge "$wait_seconds" ]; then
-			# A fixed APN is never overwritten by fallback probing.
-			if [ -z "$APN" ]; then try_fallback_apn; fi
-			bring_up "$mode"
+	if [ -z "$previous" ]; then
+		if [ "$pcie_present" -eq 1 ]; then bring_up pcie; else bring_up usb; fi
+		sleep 15
+		continue
+	fi
+
+	if [ "$previous" = pcie ] && [ "$pcie_present" -eq 0 ]; then
+		[ "$usb_present" -eq 1 ] && bring_up usb
+		sleep 15
+		continue
+	fi
+	if [ "$previous" = usb ] && [ "$usb_present" -eq 0 ]; then
+		[ "$pcie_present" -eq 1 ] && bring_up pcie
+		sleep 15
+		continue
+	fi
+
+	now="$(date +%s)"
+	probe_seconds="$(uci -q get h69kcellular.main.pcie_probe_seconds || echo 45)"
+	retry_seconds="$(uci -q get h69kcellular.main.pcie_retry_seconds || echo 300)"
+	fail_limit="$(uci -q get h69kcellular.main.pcie_failures_before_usb || echo 3)"
+
+	if [ "$previous" = pcie ]; then
+		if iface_online cell_pcie; then
+			echo 0 > "$STATE_DIR/pcie-failures"
+		else
+			since="$(cat "$STATE_DIR/since" 2>/dev/null || echo "$now")"
+			if [ $((now - since)) -ge "$probe_seconds" ]; then
+				failures="$(cat "$STATE_DIR/pcie-failures" 2>/dev/null || echo 0)"
+				failures=$((failures + 1))
+				echo "$failures" > "$STATE_DIR/pcie-failures"
+				[ -z "$APN" ] && try_fallback_apn
+				if [ "$failures" -ge "$fail_limit" ] && [ "$usb_present" -eq 1 ]; then
+					echo "$now" > "$STATE_DIR/last-pcie-attempt"
+					bring_up usb
+				else
+					bring_up pcie
+				fi
+			fi
+		fi
+	else
+		last_pcie="$(cat "$STATE_DIR/last-pcie-attempt" 2>/dev/null || echo 0)"
+		if [ "$pcie_present" -eq 1 ] && [ $((now - last_pcie)) -ge "$retry_seconds" ]; then
+			echo "$now" > "$STATE_DIR/last-pcie-attempt"
+			echo 0 > "$STATE_DIR/pcie-failures"
+			bring_up pcie
+		elif ! iface_online cell_usb_qmi; then
+			since="$(cat "$STATE_DIR/since" 2>/dev/null || echo "$now")"
+			if [ $((now - since)) -ge "$probe_seconds" ]; then
+				[ -z "$APN" ] && try_fallback_apn
+				bring_up usb
+			fi
 		fi
 	fi
 
