@@ -103,7 +103,11 @@ jobs:
         run: |
           cd openwrt
           make -j"$(nproc)" download
-          make -j"$(nproc)" V=s
+          # KWRT's Rockchip target may lag OpenWrt 25.12's 6.12 kernel by
+          # several new Kconfig symbols. Accept each symbol's safe default
+          # instead of letting syncconfig abort when Actions has no stdin.
+          set +o pipefail
+          yes '' | make -j"$(nproc)" V=s
 
       - name: Validate firmware package manifest
         run: |
