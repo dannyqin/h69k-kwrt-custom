@@ -9,7 +9,6 @@ CONFIG_TARGET_rockchip_armv8_DEVICE_hinlink_opc-h69k=y
 CONFIG_PACKAGE_kmod-mt7915e=y
 CONFIG_PACKAGE_kmod-mt76-connac=y
 CONFIG_PACKAGE_kmod-mt7916-firmware=y
-CONFIG_PACKAGE_wpad-mbedtls=y
 CONFIG_PACKAGE_kmod-mhi-bus=y
 CONFIG_PACKAGE_kmod-mhi-pci-generic=y
 CONFIG_PACKAGE_kmod-mhi-wwan-ctrl=y
@@ -59,6 +58,11 @@ for entry in $required; do
 		missing=1
 	fi
 done
+
+if ! grep -Eq '^CONFIG_PACKAGE_wpad(-(basic|mesh))?-(mbedtls|openssl)=y$' .config; then
+	echo 'MISSING: a WPA2/WPA3-capable wpad package' >&2
+	missing=1
+fi
 
 [ "$missing" -eq 0 ] || exit 1
 echo 'H69K custom configuration: package resolution passed.'
