@@ -29,8 +29,19 @@ uci set h69kcellular.main.pcie_device='/dev/wwan0mbim0'
 uci set h69kcellular.main.usb_qmi_device='/dev/cdc-wdm0'
 uci set h69kcellular.main.preferred_apn=''
 uci set h69kcellular.main.pcie_probe_seconds='45'
+uci set h69kcellular.main.pcie_failures_before_usb='3'
+uci set h69kcellular.main.pcie_retry_seconds='300'
 uci commit network
 uci commit h69kcellular
+
+# Put both cellular uplinks in the existing WAN zone so LAN forwarding and
+# masquerading work immediately after either transport connects.
+wan_zone="$(uci -q show firewall | sed -n "s/^\(firewall\.[^.]*\)\.name='wan'$/\1/p" | head -n 1)"
+if [ -n "$wan_zone" ]; then
+	uci -q add_list "$wan_zone.network=cell_pcie"
+	uci -q add_list "$wan_zone.network=cell_usb_qmi"
+	uci commit firewall
+fi
 
 /etc/init.d/h69k-cellular enable
 exit 0
