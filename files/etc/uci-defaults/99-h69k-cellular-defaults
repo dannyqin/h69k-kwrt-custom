@@ -1,0 +1,36 @@
+#!/bin/sh
+
+# The carrier profile intentionally uses an empty APN. ModemManager/MBIM can
+# obtain the carrier APN where supported; a user supplied APN always wins.
+uci -q delete network.cell_pcie
+uci set network.cell_pcie='interface'
+uci set network.cell_pcie.proto='mbim'
+uci set network.cell_pcie.device='/dev/wwan0mbim0'
+uci set network.cell_pcie.apn=''
+uci set network.cell_pcie.pdptype='ipv4v6'
+uci set network.cell_pcie.auth='none'
+uci set network.cell_pcie.metric='10'
+uci set network.cell_pcie.auto='0'
+
+uci -q delete network.cell_usb_qmi
+uci set network.cell_usb_qmi='interface'
+uci set network.cell_usb_qmi.proto='qmi'
+uci set network.cell_usb_qmi.device='/dev/cdc-wdm0'
+uci set network.cell_usb_qmi.apn=''
+uci set network.cell_usb_qmi.pdptype='ipv4v6'
+uci set network.cell_usb_qmi.auth='none'
+uci set network.cell_usb_qmi.metric='20'
+uci set network.cell_usb_qmi.auto='0'
+
+uci -q delete h69kcellular.main
+uci set h69kcellular.main='settings'
+uci set h69kcellular.main.enabled='1'
+uci set h69kcellular.main.pcie_device='/dev/wwan0mbim0'
+uci set h69kcellular.main.usb_qmi_device='/dev/cdc-wdm0'
+uci set h69kcellular.main.preferred_apn=''
+uci set h69kcellular.main.pcie_probe_seconds='45'
+uci commit network
+uci commit h69kcellular
+
+/etc/init.d/h69k-cellular enable
+exit 0
