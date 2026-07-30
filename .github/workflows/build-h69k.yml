@@ -42,6 +42,30 @@ jobs:
       - name: Apply target and custom packages
         run: |
           set -euo pipefail
+          function git_clone_path() {
+            local branch="$1" repo="$2" mode="$3" root tmp
+            if [ "$mode" != mv ]; then shift 2; else shift 3; fi
+            root="$PWD"
+            tmp="$(mktemp -d)"
+            if [ ${#branch} -lt 10 ]; then
+              git clone --depth=1 --branch "$branch" --filter=blob:none --sparse "$repo" "$tmp"
+            else
+              git clone --filter=blob:none --sparse "$repo" "$tmp"
+              git -C "$tmp" checkout "$branch"
+            fi
+            git -C "$tmp" sparse-checkout set "$@"
+            if [ "$mode" != mv ]; then
+              cp -rn "$tmp"/* "$root"/
+            else
+              for path in "$@"; do
+                mkdir -p "$root/$path"
+                mv "$tmp/$path"/* "$root/$path"/
+              done
+            fi
+            rm -rf "$tmp"
+          }
+          export -f git_clone_path
+
           cp -a kwrt/devices/common/. openwrt/
           cp -a kwrt/devices/rockchip_armv8/. openwrt/
           cp -a kwrt/devices openwrt/devices
