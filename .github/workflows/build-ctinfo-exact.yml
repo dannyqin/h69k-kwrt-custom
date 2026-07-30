@@ -59,10 +59,13 @@ jobs:
           unzip -p buildinfo_lede_H69K.zip feeds.buildinfo > lede/feeds.conf.default
           test "$(unzip -p buildinfo_lede_H69K.zip version.buildinfo)" = "$EXPECTED_REVISION"
 
-      - name: Restore exact feeds and configuration
+      - name: Restore kernel-relevant feeds and exact configuration
         working-directory: lede
         run: |
           set -euo pipefail
+          # OpenClash is a LuCI application-only feed and its large repository
+          # is not involved in kernel preparation or the kernel ABI.
+          sed -i '/^src-git OpenClash /d' feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           make defconfig
