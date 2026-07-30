@@ -1,0 +1,81 @@
+name: Build H69K Custom KWRT
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TZ: Asia/Shanghai
+  KWRT_REPO: https://github.com/kiddin9/Kwrt.git
+  OPENWRT_REPO: https://github.com/openwrt/openwrt.git
+  OPENWRT_BRANCH: openwrt-25.12
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout customization
+        uses: actions/checkout@v4
+
+      - name: Free build space
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 2048
+          temp-reserve-mb: 1024
+          swap-size-mb: 0
+          remove-dotnet: true
+          remove-android: true
+          remove-haskell: true
+          remove-codeql: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget dwarves llvm python3-pyelftools libpython3-dev aria2 jq qemu-utils ccache rename libelf-dev device-tree-compiler libgmp3-dev libmpc-dev libfuse-dev
+
+      - name: Fetch KWRT and OpenWrt base
+        run: |
+          git clone --depth=1 "$KWRT_REPO" kwrt
+          git clone --depth=1 --branch "$OPENWRT_BRANCH" "$OPENWRT_REPO" openwrt
+
+      - name: Apply target and custom packages
+        run: |
+          set -euo pipefail
+          cp -a kwrt/devices/common/. openwrt/
+          cp -a kwrt/devices/rockchip_armv8/. openwrt/
+          cp -a kwrt/devices openwrt/devices
+          mkdir -p openwrt/custom
+          cp -a diy.sh h69k-kwrt.config verify-config.sh files openwrt/custom/
+          cd openwrt
+          chmod +x devices/common/diy.sh devices/rockchip_armv8/diy.sh custom/diy.sh custom/verify-config.sh
+          ./devices/common/diy.sh
+          cp devices/common/.config .config
+          cat devices/rockchip_armv8/.config >> .config
+          ./devices/rockchip_armv8/diy.sh
+          ./custom/diy.sh
+          cat custom/h69k-kwrt.config >> .config
+          find devices/rockchip_armv8/patches -maxdepth 1 -type f -name '*.patch' -print0 | sort -z | xargs -0 -r -n1 patch -p1 -F1 -i
+
+      - name: Resolve and validate configuration
+        run: |
+          cd openwrt
+          ./custom/verify-config.sh
+
+      - name: Compile firmware
+        run: |
+          cd openwrt
+          make -j"$(nproc)" download
+          make -j"$(nproc)" V=s
+
+      - name: Upload H69K firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: h69k-kwrt-custom-${{ github.run_number }}
+          path: |
+            openwrt/bin/targets/rockchip/armv8/*hinlink_opc-h69k*
+            openwrt/bin/targets/rockchip/armv8/*.config
+          if-no-files-found: error
+          retention-days: 14
