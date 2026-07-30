@@ -4,7 +4,7 @@ set -eu
 
 make defconfig
 
-required='\
+required='
 CONFIG_TARGET_rockchip_armv8_DEVICE_hinlink_opc-h69k=y
 CONFIG_PACKAGE_kmod-mt7915e=y
 CONFIG_PACKAGE_kmod-mt7916-firmware=y
