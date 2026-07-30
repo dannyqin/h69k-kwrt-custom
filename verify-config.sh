@@ -39,12 +39,17 @@ CONFIG_PACKAGE_sqm-autorate=y
 CONFIG_PACKAGE_luci-app-sqm-autorate=y
 CONFIG_PACKAGE_tsping=y
 CONFIG_PACKAGE_luci-app-modeminfo=y
+CONFIG_PACKAGE_modeminfo=y
 CONFIG_PACKAGE_luci-app-modemband=y
+CONFIG_PACKAGE_modemband=y
 CONFIG_PACKAGE_luci-app-3ginfo-lite=y
 CONFIG_PACKAGE_luci-app-atinout=y
+CONFIG_PACKAGE_atinout=y
+CONFIG_PACKAGE_comgt=y
 CONFIG_PACKAGE_kmod-cpufreq-dt=y
 CONFIG_PACKAGE_cpufreq=y
 CONFIG_PACKAGE_luci-app-cpufreq=y
+CONFIG_PACKAGE_kmod-hwmon-core=y
 CONFIG_PACKAGE_kmod-hwmon-pwmfan=y
 CONFIG_PACKAGE_luci-app-fancontrol=y'
 
