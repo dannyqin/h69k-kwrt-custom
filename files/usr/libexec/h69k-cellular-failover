@@ -1,0 +1,79 @@
+#!/bin/sh
+
+# PCIe is intentionally the transport priority. On current upstream MHI, the
+# RM520N-GL's dependable OpenWrt data protocol is MBIM; USB QMI is the backup.
+STATE_DIR=/tmp/h69k-cellular
+mkdir -p "$STATE_DIR"
+
+iface_up() {
+	ifstatus "$1" 2>/dev/null | jsonfilter -e '@.up' 2>/dev/null | grep -qx true
+}
+
+set_apn() {
+	[ "$(uci -q get network.cell_pcie.apn)" = "$1" ] && \
+	[ "$(uci -q get network.cell_usb_qmi.apn)" = "$1" ] && return 0
+	uci set network.cell_pcie.apn="$1"
+	uci set network.cell_usb_qmi.apn="$1"
+	uci commit network
+}
+
+bring_up() {
+	mode="$1"
+	if [ "$mode" = pcie ]; then
+		ifdown cell_usb_qmi 2>/dev/null
+		ifup cell_pcie
+	else
+		ifdown cell_pcie 2>/dev/null
+		ifup cell_usb_qmi
+	fi
+	echo "$mode" > "$STATE_DIR/mode"
+	date +%s > "$STATE_DIR/since"
+}
+
+try_fallback_apn() {
+	# Empty APN is tested first. If the carrier does not provide a default
+	# context, cycle through the standard mainland China carrier APNs.
+	index="$(cat "$STATE_DIR/apn-index" 2>/dev/null || echo 0)"
+	case "$index" in
+		0) apn=cmnet; next=1 ;;
+		1) apn=3gnet; next=2 ;;
+		*) apn=ctnet; next=0 ;;
+	esac
+	set_apn "$apn"
+	echo "$next" > "$STATE_DIR/apn-index"
+}
+
+while true; do
+	PCIE_DEVICE="$(uci -q get h69kcellular.main.pcie_device)"
+	USB_QMI_DEVICE="$(uci -q get h69kcellular.main.usb_qmi_device)"
+	APN="$(uci -q get h69kcellular.main.preferred_apn)"
+
+	[ -n "$APN" ] && set_apn "$APN"
+
+	if [ -c "$PCIE_DEVICE" ]; then
+		mode=pcie
+		interface=cell_pcie
+	elif [ -c "$USB_QMI_DEVICE" ]; then
+		mode=usb
+		interface=cell_usb_qmi
+	else
+		sleep 15
+		continue
+	fi
+
+	previous="$(cat "$STATE_DIR/mode" 2>/dev/null || true)"
+	if [ "$previous" != "$mode" ]; then
+		bring_up "$mode"
+	elif ! iface_up "$interface"; then
+		now="$(date +%s)"
+		since="$(cat "$STATE_DIR/since" 2>/dev/null || echo "$now")"
+		wait_seconds="$(uci -q get h69kcellular.main.pcie_probe_seconds || echo 45)"
+		if [ $((now - since)) -ge "$wait_seconds" ]; then
+			# A fixed APN is never overwritten by fallback probing.
+			if [ -z "$APN" ]; then try_fallback_apn; fi
+			bring_up "$mode"
+		fi
+	fi
+
+	sleep 15
+done
