@@ -34,6 +34,14 @@ bring_up() {
 	date +%s > "$STATE_DIR/since"
 }
 
+probe_pcie() {
+	# Keep the working USB path up while PCIe is tested. USB is stopped only
+	# after PCIe has obtained an address, avoiding periodic failback outages.
+	ifup cell_pcie
+	echo pcie-probe > "$STATE_DIR/mode"
+	date +%s > "$STATE_DIR/since"
+}
+
 try_fallback_apn() {
 	# Empty APN is tested first. If the carrier does not provide a default
 	# context, cycle through the standard mainland China carrier APNs.
@@ -76,6 +84,24 @@ while true; do
 		sleep 15
 		continue
 	fi
+	if [ "$previous" = pcie-probe ]; then
+		now="$(date +%s)"
+		probe_seconds="$(uci -q get h69kcellular.main.pcie_probe_seconds || echo 45)"
+		since="$(cat "$STATE_DIR/since" 2>/dev/null || echo "$now")"
+		if iface_online cell_pcie; then
+			ifdown cell_usb_qmi 2>/dev/null
+			echo pcie > "$STATE_DIR/mode"
+			date +%s > "$STATE_DIR/since"
+			echo 0 > "$STATE_DIR/pcie-failures"
+		elif [ $((now - since)) -ge "$probe_seconds" ]; then
+			ifdown cell_pcie 2>/dev/null
+			echo usb > "$STATE_DIR/mode"
+			date +%s > "$STATE_DIR/since"
+			echo "$now" > "$STATE_DIR/last-pcie-attempt"
+		fi
+		sleep 15
+		continue
+	fi
 	if [ "$previous" = usb ] && [ "$usb_present" -eq 0 ]; then
 		[ "$pcie_present" -eq 1 ] && bring_up pcie
 		sleep 15
@@ -110,7 +136,7 @@ while true; do
 		if [ "$pcie_present" -eq 1 ] && [ $((now - last_pcie)) -ge "$retry_seconds" ]; then
 			echo "$now" > "$STATE_DIR/last-pcie-attempt"
 			echo 0 > "$STATE_DIR/pcie-failures"
-			bring_up pcie
+			probe_pcie
 		elif ! iface_online cell_usb_qmi; then
 			since="$(cat "$STATE_DIR/since" 2>/dev/null || echo "$now")"
 			if [ $((now - since)) -ge "$probe_seconds" ]; then
