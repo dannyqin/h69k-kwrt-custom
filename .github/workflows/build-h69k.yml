@@ -109,7 +109,6 @@ jobs:
           required_packages='
           kmod-mt7915e
           kmod-mt7916-firmware
-          wpad-mbedtls
           kmod-mhi-pci-generic
           kmod-mhi-wwan-mbim
           luci-proto-mbim
@@ -141,6 +140,10 @@ jobs:
               exit 1
             }
           done
+          grep -Eq '^wpad(-(basic|mesh))?-(mbedtls|openssl)[[:space:]]' "$manifest" || {
+            echo 'MISSING FROM FIRMWARE: a WPA2/WPA3-capable wpad package' >&2
+            exit 1
+          }
           echo "Firmware manifest validation passed: $manifest"
 
       - name: Upload H69K firmware
