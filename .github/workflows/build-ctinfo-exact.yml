@@ -1,0 +1,208 @@
+name: Build exact H69K CTINFO module
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TZ: Asia/Shanghai
+  LEDE_REPOSITORY: https://github.com/coolsnowwolf/lede.git
+  LEDE_COMMIT: 6883e66e8b002791cce8587ddb85b63b81b0754c
+  EXPECTED_REVISION: r7863-6883e66e8
+  EXPECTED_KERNEL_VERSION: 6.12.95
+  EXPECTED_KERNEL_ABI: 6b55d3dab743bdbc7d23b587a0baf08c
+  EXPECTED_VERMAGIC: 6.12.95 SMP mod_unload aarch64
+  EXPECTED_THIS_MODULE_SIZE: 000002c0
+  BUILDINFO_URL: https://github.com/smallprogram/OpenWrtAction/releases/download/multi-platform_2026.07.27_00.46.11/buildinfo_lede_H69K.zip
+  BUILDINFO_SHA256: d6a5ad567a164af3afab2f74bf46e6acc2b46d268385a8df04cf1e3927ef14da
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Free build space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install \
+            build-essential clang flex bison g++ gawk gcc-multilib \
+            g++-multilib gettext git libncurses5-dev libssl-dev \
+            python3-setuptools rsync swig unzip zlib1g-dev file wget \
+            dwarves llvm python3-pyelftools libpython3-dev aria2 jq \
+            qemu-utils ccache rename libelf-dev device-tree-compiler \
+            libgmp3-dev libmpc-dev libfuse-dev kmod
+
+      - name: Fetch exact source and original build metadata
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none "$LEDE_REPOSITORY" lede
+          git -C lede checkout --detach "$LEDE_COMMIT"
+          test "$(git -C lede rev-parse HEAD)" = "$LEDE_COMMIT"
+
+          curl -fL --retry 10 --retry-delay 2 \
+            -o buildinfo_lede_H69K.zip "$BUILDINFO_URL"
+          echo "$BUILDINFO_SHA256  buildinfo_lede_H69K.zip" | sha256sum -c -
+
+          unzip -p buildinfo_lede_H69K.zip config.buildinfo > lede/.config
+          unzip -p buildinfo_lede_H69K.zip feeds.buildinfo > lede/feeds.conf.default
+          test "$(unzip -p buildinfo_lede_H69K.zip version.buildinfo)" = "$EXPECTED_REVISION"
+
+      - name: Restore exact feeds and configuration
+        working-directory: lede
+        run: |
+          set -euo pipefail
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          make defconfig
+
+          grep -qx 'CONFIG_TARGET_rockchip=y' .config
+          grep -qx 'CONFIG_TARGET_rockchip_armv8=y' .config
+          grep -qx 'CONFIG_TARGET_rockchip_armv8_DEVICE_hinlink_opc-h69k=y' .config
+          if grep -Eq '^CONFIG_(PACKAGE_kmod-sched-ctinfo|NET_ACT_CTINFO)=[ym]$' .config; then
+            echo "Original configuration unexpectedly enables CTINFO." >&2
+            exit 1
+          fi
+
+      - name: Build the exact original kernel tree
+        working-directory: lede
+        run: |
+          set -euo pipefail
+          make -j"$(nproc)" tools/install toolchain/install
+          make -j"$(nproc)" target/linux/compile V=s
+
+      - name: Compile CTINFO out of tree without changing kernel config
+        working-directory: lede
+        run: |
+          set -euo pipefail
+
+          kernel_dir="$(find build_dir -type d \
+            -path "*/linux-rockchip_armv8/linux-$EXPECTED_KERNEL_VERSION" \
+            -print -quit)"
+          test -n "$kernel_dir"
+          test -f "$kernel_dir/.config"
+          test -f "$kernel_dir/Module.symvers"
+          test -f "$kernel_dir/net/sched/act_ctinfo.c"
+          test -f "$kernel_dir/.vermagic"
+
+          actual_abi="$(tr -d '\r\n' < "$kernel_dir/.vermagic")"
+          test "$actual_abi" = "$EXPECTED_KERNEL_ABI" || {
+            echo "Kernel ABI mismatch: expected $EXPECTED_KERNEL_ABI, got $actual_abi" >&2
+            exit 1
+          }
+
+          cross_gcc="$(find staging_dir -type f \
+            -path '*/bin/aarch64-openwrt-linux*-gcc' -print -quit)"
+          test -n "$cross_gcc"
+          cross_prefix="${cross_gcc%gcc}"
+
+          module_dir="$GITHUB_WORKSPACE/ctinfo-module"
+          mkdir -p "$module_dir"
+          cp "$kernel_dir/net/sched/act_ctinfo.c" "$module_dir/"
+          printf 'obj-m += act_ctinfo.o\n' > "$module_dir/Makefile"
+
+          make -C "$kernel_dir" \
+            ARCH=arm64 \
+            CROSS_COMPILE="$PWD/$cross_prefix" \
+            M="$module_dir" \
+            modules
+
+          module="$module_dir/act_ctinfo.ko"
+          test -s "$module"
+
+          actual_vermagic="$(modinfo -F vermagic "$module" | sed 's/[[:space:]]*$//')"
+          test "$actual_vermagic" = "$EXPECTED_VERMAGIC" || {
+            echo "Vermagic mismatch: expected '$EXPECTED_VERMAGIC', got '$actual_vermagic'" >&2
+            exit 1
+          }
+
+          module_size="$("$cross_prefix"objdump -h "$module" |
+            awk '$2==".gnu.linkonce.this_module" { print $3; exit }')"
+          test "$module_size" = "$EXPECTED_THIS_MODULE_SIZE" || {
+            echo "struct module size mismatch: expected $EXPECTED_THIS_MODULE_SIZE, got $module_size" >&2
+            exit 1
+          }
+
+          "$cross_prefix"nm -u "$module" |
+            awk '{ print $2 }' | sed '/^$/d' | sort -u > "$module_dir/undefined-symbols.txt"
+          cut -f2 "$kernel_dir/Module.symvers" | sort -u > "$module_dir/exported-symbols.txt"
+          comm -23 "$module_dir/undefined-symbols.txt" \
+            "$module_dir/exported-symbols.txt" > "$module_dir/missing-symbols.txt"
+          test ! -s "$module_dir/missing-symbols.txt" || {
+            echo "Module references symbols absent from exact Module.symvers:" >&2
+            cat "$module_dir/missing-symbols.txt" >&2
+            exit 1
+          }
+
+          {
+            echo "source_commit=$LEDE_COMMIT"
+            echo "source_revision=$EXPECTED_REVISION"
+            echo "target=rockchip/armv8/hinlink_opc-h69k"
+            echo "kernel_version=$EXPECTED_KERNEL_VERSION"
+            echo "kernel_abi=$actual_abi"
+            echo "vermagic=$actual_vermagic"
+            echo "this_module_size=$module_size"
+            echo "architecture=$("$cross_prefix"readelf -h "$module" | awk -F: '/Machine:/ {gsub(/^[ \t]+/, "", $2); print $2}')"
+            echo "depends=$(modinfo -F depends "$module")"
+            echo "sha256=$(sha256sum "$module" | awk '{print $1}')"
+          } | tee "$module_dir/verification.txt"
+
+      - name: Package exact-ABI IPK without automatic loading
+        run: |
+          set -euo pipefail
+
+          module_dir="$GITHUB_WORKSPACE/ctinfo-module"
+          pkg="$GITHUB_WORKSPACE/ctinfo-package"
+          out="$GITHUB_WORKSPACE/output"
+          mkdir -p \
+            "$pkg/root/lib/modules/$EXPECTED_KERNEL_VERSION" \
+            "$pkg/control" "$pkg/archive" "$out"
+          install -m 0644 "$module_dir/act_ctinfo.ko" \
+            "$pkg/root/lib/modules/$EXPECTED_KERNEL_VERSION/act_ctinfo.ko"
+
+          installed_size="$(stat -c %s "$module_dir/act_ctinfo.ko")"
+          cat > "$pkg/control/control" <<EOF
+          Package: kmod-sched-ctinfo
+          Version: $EXPECTED_KERNEL_VERSION-1
+          Depends: kernel (=$EXPECTED_KERNEL_VERSION-1-$EXPECTED_KERNEL_ABI)
+          Source: exact-$LEDE_COMMIT
+          SourceName: kmod-sched-ctinfo
+          License: GPL-2.0
+          Section: kernel
+          Architecture: aarch64_generic
+          Installed-Size: $installed_size
+          Description: Exact-ABI CTINFO tc action for the HINLINK OPC-H69K
+          EOF
+
+          tar --format=gnu -czf "$pkg/archive/control.tar.gz" -C "$pkg/control" .
+          tar --format=gnu -czf "$pkg/archive/data.tar.gz" -C "$pkg/root" .
+          printf '2.0\n' > "$pkg/archive/debian-binary"
+          (
+            cd "$pkg/archive"
+            ar r "$out/kmod-sched-ctinfo_${EXPECTED_KERNEL_VERSION}-1_aarch64_generic.ipk" \
+              debian-binary control.tar.gz data.tar.gz
+          )
+
+          cp "$module_dir/act_ctinfo.ko" "$out/"
+          cp "$module_dir/verification.txt" "$out/"
+          cp "$module_dir/undefined-symbols.txt" "$out/"
+          sha256sum "$out"/* | tee "$out/SHA256SUMS"
+
+      - name: Upload verified CTINFO artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: h69k-ctinfo-exact-${{ github.run_number }}
+          path: output/*
+          if-no-files-found: error
+          retention-days: 14
